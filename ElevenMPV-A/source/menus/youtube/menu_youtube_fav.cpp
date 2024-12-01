@@ -10,7 +10,7 @@
 #include "menu_audioplayer.h"
 #include "utils.h"
 #include "yt_utils.h"
-#include "youtube_parser.hpp"
+#include "invidious.h"
 
 using namespace paf;
 
@@ -19,85 +19,88 @@ static menu::youtube::FavPage *s_currentFavPage = SCE_NULL;
 SceVoid menu::youtube::FavParserThread::CreateVideoButton(FavPage *page, const char *data, SceUInt32 index, const char *keyWord)
 {
 	SceInt32 res;
-	WString text16;
-	String text8;
-	YouTubeVideoDetail *vidInfo;
-	Resource::Element searchParam;
+	wstring title16;
+	wstring subtext16;
+	string text8;
+	InvItemVideo *vidInfo;
+	rco::Element searchParam;
 	Plugin::TemplateInitParam tmpParam;
 	ui::Widget *box;
 	ui::Widget *button;
 	ui::Widget *subtext;
 	VideoButtonCB *buttonCB;
-	ObjectWithCleanup fres;
-	graphics::Texture tmbTex;
-	char url[256];
-	char tmb[256];
+	SharedPtr<HttpFile> fres;
+	graph::Surface *tmbTex;
 
-	sce_paf_memset(url, 0, sizeof(url));
-	sce_paf_memset(tmb, 0, sizeof(tmb));
-
-	youtube_get_video_url_by_id(data, url, sizeof(url));
-	vidInfo = youtube_parse_video_page(url);
+	res = invParseVideo(data, &vidInfo);
+	if (res != 1)
+		return;
 
 	if (keyWord) {
-		if (!sce_paf_strstr(vidInfo->title.c_str(), keyWord)) {
-			youtube_destroy_struct(vidInfo);
+		if (!sce_paf_strstr(vidInfo->title, keyWord)) {
+			invCleanupVideo(vidInfo);
 			return;
 		}
 		else {
-			EMPVAUtils::EndPleaseWait();
+			Dialog::Close();
 		}
 	}
 
 	searchParam.hash = EMPVAUtils::GetHash("youtube_scroll_box");
-	box = page->thisPage->GetChildByHash(&searchParam, 0);
+	box = page->thisPage->GetChild(&searchParam, 0);
 
 	searchParam.hash = EMPVAUtils::GetHash("menu_template_youtube_result_button");
+	thread::s_mainThreadMutex.Lock();
 	g_empvaPlugin->TemplateOpen(box, &searchParam, &tmpParam);
+	thread::s_mainThreadMutex.Unlock();
 
-	button = (ui::ImageButton *)box->GetChildByNum(box->childNum - 1);
+	button = (ui::ImageButton *)box->GetChild(box->childNum - 1);
 
 	searchParam.hash = EMPVAUtils::GetHash("yt_text_button_subtext");
-	subtext = button->GetChildByHash(&searchParam, 0);
+	subtext = button->GetChild(&searchParam, 0);
 
-	text8 = vidInfo->title.c_str();
-	text8.ToWString(&text16);
-	button->SetLabel(&text16);
+	text8 = vidInfo->title;
+	ccc::UTF8toUTF16(&text8, &title16);
 
-	menu::audioplayer::Audioplayer::ConvertSecondsToString(&text8, (SceUInt64)((SceFloat)vidInfo->duration_ms / 1000.0f), SCE_FALSE);
-	text8.ToWString(&text16);
-	subtext->SetLabel(&text16);
+	menu::audioplayer::Audioplayer::ConvertSecondsToString(&text8, (SceUInt64)vidInfo->lengthSec, SCE_FALSE);
+	text8 += "  ";
+	text8 += vidInfo->author;
+	ccc::UTF8toUTF16(&text8, &subtext16);
 
+	thread::s_mainThreadMutex.Lock();
 	buttonCB = new VideoButtonCB;
 	buttonCB->pUserData = buttonCB;
 	buttonCB->mode = menu::youtube::Base::Mode_Fav;
-	buttonCB->url = url;
-	button->RegisterEventCallback(ui::Widget::EventMain_Pressed, buttonCB, 0);
+	buttonCB->url = vidInfo->id;
 
-	youtube_get_video_thumbnail_url_by_id(data, tmb, sizeof(tmb));
+	button->SetLabel(&title16);
+	subtext->SetLabel(&subtext16);
+	button->RegisterEventCallback(ui::EventMain_Decide, buttonCB, 0);
+	thread::s_mainThreadMutex.Unlock();
 
-	youtube_destroy_struct(vidInfo);
-
-	HttpFile::Open(&fres, tmb, &res, 0);
+	fres = HttpFile::Open(vidInfo->thmbUrl, &res, 0);
+	invCleanupVideo(vidInfo);
 	if (res < 0) {
 		return;
 	}
 
-	graphics::Texture::CreateFromFile(&tmbTex, g_empvaPlugin->memoryPool, &fres);
+	graph::Surface::Create(&tmbTex, g_empvaPlugin->memoryPool, (SharedPtr<File>*)&fres);
 
-	fres.cleanup->cb(fres.object);
-	delete fres.cleanup;
+	fres.reset();
 
-	if (tmbTex.texSurface == SCE_NULL) {
+	if (tmbTex == SCE_NULL) {
 		return;
 	}
 
-	button->SetTextureBase(&tmbTex);
+	thread::s_mainThreadMutex.Lock();
+	tmbTex->UnsafeRelease();
+	button->SetSurfaceBase(&tmbTex);
+	thread::s_mainThreadMutex.Unlock();
 }
 
 SceVoid menu::youtube::FavParserThread::EntryFunction()
 {
-	Resource::Element searchParam;
+	rco::Element searchParam;
 	Plugin::TemplateInitParam tmpParam;
 	ui::Widget *commonWidget;
 	SceUInt32 prevResNum = 0;
@@ -114,94 +117,90 @@ SceVoid menu::youtube::FavParserThread::EntryFunction()
 	}
 
 	searchParam.hash = EMPVAUtils::GetHash("yt_button_btmenu_right");
-	commonWidget = g_rootPage->GetChildByHash(&searchParam, 0);
-	commonWidget->PlayAnimationReverse(0.0f, ui::Widget::Animation_Fadein1);
+	commonWidget = g_rootPage->GetChild(&searchParam, 0);
+	commonWidget->PlayEffectReverse(0.0f, effect::EffectType_Fadein1);
 
 	searchParam.hash = EMPVAUtils::GetHash("yt_button_btmenu_left");
-	commonWidget = g_rootPage->GetChildByHash(&searchParam, 0);
-	commonWidget->PlayAnimationReverse(0.0f, ui::Widget::Animation_Fadein1);
+	commonWidget = g_rootPage->GetChild(&searchParam, 0);
+	commonWidget->PlayEffectReverse(0.0f, effect::EffectType_Fadein1);
 
 	searchParam.hash = EMPVAUtils::GetHash("menu_template_youtube");
 	g_empvaPlugin->TemplateOpen(g_root, &searchParam, &tmpParam);
 
 	searchParam.hash = EMPVAUtils::GetHash("plane_youtube_bg");
-	workPage->thisPage = (ui::Plane *)g_root->GetChildByHash(&searchParam, 0);
-	workPage->thisPage->hash = (SceUInt32)workPage->thisPage;
+	workPage->thisPage = (ui::Plane *)g_root->GetChild(&searchParam, 0);
+	workPage->thisPage->elem.hash = (SceUInt32)workPage->thisPage;
 
 	if (workPage->prev != SCE_NULL) {
 		if (workPage->prev->prev != SCE_NULL) {
-			workPage->prev->prev->thisPage->PlayAnimationReverse(0.0f, ui::Widget::Animation_Reset);
+			workPage->prev->prev->thisPage->PlayEffectReverse(0.0f, effect::EffectType_Reset);
 			if (workPage->prev->prev->thisPage->animationStatus & 0x80)
 				workPage->prev->prev->thisPage->animationStatus &= ~0x80;
 		}
-		workPage->prev->thisPage->PlayAnimation(0.0f, ui::Widget::Animation_3D_SlideToBack1);
+		workPage->prev->thisPage->PlayEffect(0.0f, effect::EffectType_3D_SlideToBack1);
 		if (workPage->prev->thisPage->animationStatus & 0x80)
 			workPage->prev->thisPage->animationStatus &= ~0x80;
 	}
-	workPage->thisPage->PlayAnimation(-5000.0f, ui::Widget::Animation_3D_SlideFromFront);
+	workPage->thisPage->PlayEffect(-5000.0f, effect::EffectType_3D_SlideFromFront);
 	if (workPage->thisPage->animationStatus & 0x80)
 		workPage->thisPage->animationStatus &= ~0x80;
 
 	if (prevPage) {
 		searchParam.hash = EMPVAUtils::GetHash("yt_button_btmenu_left");
-		commonWidget = g_rootPage->GetChildByHash(&searchParam, 0);
-		commonWidget->PlayAnimation(0.0f, ui::Widget::Animation_Fadein1);
+		commonWidget = g_rootPage->GetChild(&searchParam, 0);
+		commonWidget->PlayEffect(0.0f, effect::EffectType_Fadein1);
 	}
 
-	if (keyWord.length) {
+	if (keyWord.length()) {
 		while (1) {
-			YTUtils::GetMenuSema()->Wait();
-			if (cancel) {
-				YTUtils::GetMenuSema()->Signal();
-				sceKernelExitDeleteThread(0);
+			YTUtils::WaitMenuParsers();
+			if (IsCanceled()) {
+				Cancel();
+				return;
 			}
 			parseRes = YTUtils::GetFavLog()->GetNext(key);
 			if (parseRes) {
-				YTUtils::GetMenuSema()->Signal();
 				break;
 			}
-			CreateVideoButton(workPage, key, 0, keyWord.data);
+			CreateVideoButton(workPage, key, 0, keyWord.c_str());
 			workPage->resNum++;
-			YTUtils::GetMenuSema()->Signal();
 		}
 	}
 	else {
 		for (SceInt32 i = prevResNum; i < menu::youtube::FavPage::k_resPerPage + prevResNum; i++) {
-			YTUtils::GetMenuSema()->Wait();
-			if (cancel) {
-				YTUtils::GetMenuSema()->Signal();
-				sceKernelExitDeleteThread(0);
+			YTUtils::WaitMenuParsers();
+			if (IsCanceled()) {
+				Cancel();
+				return;
 			}
 			parseRes = YTUtils::GetFavLog()->GetNext(key);
 			if (parseRes) {
-				YTUtils::GetMenuSema()->Signal();
 				break;
 			}
 			CreateVideoButton(workPage, key, i, SCE_NULL);
 			workPage->resNum++;
-			YTUtils::GetMenuSema()->Signal();
 		}
 
 		if (!parseRes) {
 			searchParam.hash = EMPVAUtils::GetHash("yt_button_btmenu_right");
-			commonWidget = g_rootPage->GetChildByHash(&searchParam, 0);
-			commonWidget->PlayAnimation(0.0f, ui::Widget::Animation_Fadein1);
+			commonWidget = g_rootPage->GetChild(&searchParam, 0);
+			commonWidget->PlayEffect(0.0f, effect::EffectType_Fadein1);
 		}
 	}
 
-	EMPVAUtils::EndPleaseWait();
+	Dialog::Close();
 
-	sceKernelExitDeleteThread(0);
+	Cancel();
 }
 
 SceVoid menu::youtube::FavPage::SearchActionButtonOp()
 {
-	Resource::Element searchParam;
+	rco::Element searchParam;
 	ui::TextBox *searchBox;
-	WString text16;
-	String text8;
+	wstring text16;
+	string text8;
 
-	EMPVAUtils::BeginPleaseWait(SCE_TRUE);
+	Dialog::OpenPleaseWait(g_empvaPlugin, SCE_NULL, EMPVAUtils::GetString("msg_wait"), SCE_TRUE);
 
 	// In destructor s_current(...)Page->prev is assigned to s_current(...)Page
 	while (s_currentFavPage) {
@@ -209,15 +208,15 @@ SceVoid menu::youtube::FavPage::SearchActionButtonOp()
 	}
 
 	searchParam.hash = EMPVAUtils::GetHash("yt_text_box_top_search");
-	searchBox = (ui::TextBox *)g_rootPage->GetChildByHash(&searchParam, 0);
+	searchBox = (ui::TextBox *)g_rootPage->GetChild(&searchParam, 0);
 
 	searchBox->GetLabel(&text16);
 
-	if (text16.length != 0) {
+	if (text16.length() != 0) {
 
-		text16.ToString(&text8);
+		ccc::UTF16toUTF8(&text16, &text8);
 
-		new FavPage(text8.data);
+		new FavPage(text8.c_str());
 	}
 }
 
@@ -233,7 +232,6 @@ menu::youtube::FavPage::FavPage()
 	parserThread = new FavParserThread(SCE_KERNEL_DEFAULT_PRIORITY_USER, SCE_KERNEL_256KiB, "EMPVA::YtFavParser");
 	parserThread->prevPage = SCE_NULL;
 	parserThread->workPage = this;
-	parserThread->cancel = SCE_FALSE;
 	parserThread->Start();
 
 	s_currentFavPage = this;
@@ -254,7 +252,6 @@ menu::youtube::FavPage::FavPage(FavPage *prevPage)
 	parserThread = new FavParserThread(SCE_KERNEL_DEFAULT_PRIORITY_USER, SCE_KERNEL_256KiB, "EMPVA::YtFavParser");
 	parserThread->prevPage = prevPage;
 	parserThread->workPage = this;
-	parserThread->cancel = SCE_FALSE;
 	parserThread->Start();
 
 	s_currentFavPage = this;
@@ -271,7 +268,6 @@ menu::youtube::FavPage::FavPage(const char *keyWord)
 	parserThread = new FavParserThread(SCE_KERNEL_DEFAULT_PRIORITY_USER, SCE_KERNEL_256KiB, "EMPVA::YtFavParser");
 	parserThread->prevPage = SCE_NULL;
 	parserThread->workPage = this;
-	parserThread->cancel = SCE_FALSE;
 	parserThread->keyWord = keyWord;
 	parserThread->Start();
 
@@ -280,47 +276,38 @@ menu::youtube::FavPage::FavPage(const char *keyWord)
 
 menu::youtube::FavPage::~FavPage()
 {
-	Resource::Element searchParam;
-	ui::Widget *box;
+	rco::Element searchParam;
 	ui::Widget *commonWidget;
 	ui::ImageButton *button;
-	graphics::Surface *tmpSurf;
+	graph::Surface *tmpSurf;
 
-	parserThread->cancel = SCE_TRUE;
+	parserThread->Cancel();
+	thread::s_mainThreadMutex.Unlock();
 	parserThread->Join();
+	thread::s_mainThreadMutex.Lock();
 	delete parserThread;
 
-	searchParam.hash = EMPVAUtils::GetHash("youtube_scroll_box");
-	box = thisPage->GetChildByHash(&searchParam, 0);
-	
-	for (SceInt32 i = 0; i < box->childNum; i++) {
-		button = (ui::ImageButton *)box->GetChildByNum(i);
-		tmpSurf = button->imageSurf;
-		button->SetTextureBase(g_texTransparent);
-		delete tmpSurf;
-	}
-
-	common::Utils::WidgetStateTransition(-100.0f, thisPage, ui::Widget::Animation_3D_SlideFromFront, SCE_TRUE, SCE_FALSE);
+	effect::Play(-100.0f, thisPage, effect::EffectType_3D_SlideFromFront, SCE_TRUE, SCE_FALSE);
 	if (prev != SCE_NULL) {
-		prev->thisPage->PlayAnimationReverse(0.0f, ui::Widget::Animation_3D_SlideToBack1);
-		prev->thisPage->PlayAnimation(0.0f, ui::Widget::Animation_Reset);
+		prev->thisPage->PlayEffectReverse(0.0f, effect::EffectType_3D_SlideToBack1);
+		prev->thisPage->PlayEffect(0.0f, effect::EffectType_Reset);
 		if (prev->thisPage->animationStatus & 0x80)
 			prev->thisPage->animationStatus &= ~0x80;
 		if (prev->prev != SCE_NULL) {
-			prev->prev->thisPage->PlayAnimation(0.0f, ui::Widget::Animation_Reset);
+			prev->prev->thisPage->PlayEffect(0.0f, effect::EffectType_Reset);
 			if (prev->prev->thisPage->animationStatus & 0x80)
 				prev->prev->thisPage->animationStatus &= ~0x80;
 		}
 		else {
 			searchParam.hash = EMPVAUtils::GetHash("yt_button_btmenu_left");
-			commonWidget = g_rootPage->GetChildByHash(&searchParam, 0);
-			commonWidget->PlayAnimationReverse(0.0f, ui::Widget::Animation_Fadein1);
+			commonWidget = g_rootPage->GetChild(&searchParam, 0);
+			commonWidget->PlayEffectReverse(0.0f, effect::EffectType_Fadein1);
 		}
 	}
 
 	searchParam.hash = EMPVAUtils::GetHash("yt_button_btmenu_right");
-	commonWidget = g_rootPage->GetChildByHash(&searchParam, 0);
-	commonWidget->PlayAnimation(0.0f, ui::Widget::Animation_Fadein1);
+	commonWidget = g_rootPage->GetChild(&searchParam, 0);
+	commonWidget->PlayEffect(0.0f, effect::EffectType_Fadein1);
 
 	s_currentFavPage = prev;
 }
@@ -337,7 +324,7 @@ SceVoid menu::youtube::FavPage::RightButtonOp()
 
 SceVoid menu::youtube::FavPage::TermOp()
 {
-	Resource::Element searchParam;
+	rco::Element searchParam;
 	ui::Widget *commonWidget;
 
 	// In destructor s_current(...)Page->prev is assigned to s_current(...)Page
@@ -346,6 +333,6 @@ SceVoid menu::youtube::FavPage::TermOp()
 	}
 
 	searchParam.hash = EMPVAUtils::GetHash("yt_button_btmenu_right");
-	commonWidget = g_rootPage->GetChildByHash(&searchParam, 0);
-	commonWidget->PlayAnimationReverse(0.0f, ui::Widget::Animation_Fadein1);
+	commonWidget = g_rootPage->GetChild(&searchParam, 0);
+	commonWidget->PlayEffectReverse(0.0f, effect::EffectType_Fadein1);
 }

@@ -76,9 +76,9 @@ SceInt32 Downloader::Enqueue(const char *url, const char *name)
 	sce_paf_memset(&dparam, 0, sizeof(sce::Download::DownloadParam));
 	sce_paf_memset(&minfo, 0, sizeof(sce::Download::MetadataInfo));
 
-	hparam.paramType1 = HttpFile::Param::SCE_PAF_HTTP_FILE_PARAM_RESOLVE_TIME_OUT;
+	hparam.paramType1 = HttpFile::OpenArg::Opt_ResolveTimeOut;
 	hparam.paramVal1 = 4000000;
-	hparam.paramType2 = HttpFile::Param::SCE_PAF_HTTP_FILE_PARAM_CONNECT_TIME_OUT;
+	hparam.paramType2 = HttpFile::OpenArg::Opt_ConnectTimeOut;
 	hparam.paramVal2 = 30000000;
 	hparam.paramType2 = 0;
 	hparam.paramVal2 = 30000000;
@@ -114,9 +114,19 @@ SceInt32 Downloader::Enqueue(const char *url, const char *name)
 	bfInfo.data1 = &dwRes;
 	bfInfo.data1Size = sizeof(SceInt32);
 
+	ret2 = SCE_OK;
 	ret = dw.client->invokeSyncMethod(0x12340011, &dtInfo, 3, &ret2, &bfInfo, 1);
-	if (ret2 != SCE_OK)
-		return ret2;
+	if (ret2 != SCE_OK) {
+		//invalid filename?
+		sce_paf_memset(&minfo.name, 0, sizeof(minfo.name));
+		char *ext = sce_paf_strrchr(name, '.');
+		sce_paf_snprintf((char *)minfo.name, sizeof(minfo.name), "DefaultFilename%s", ext);
+
+		ret2 = SCE_OK;
+		ret = dw.client->invokeSyncMethod(0x12340011, &dtInfo, 3, &ret2, &bfInfo, 1);
+		if (ret2 != SCE_OK)
+			return ret2;
+	}
 
 	return ret;
 }
@@ -128,14 +138,7 @@ SceInt32 Downloader::EnqueueAsync(const char *url, const char *name)
 	dwJob->url8 = url;
 	dwJob->name8 = name;
 
-	CleanupHandler *req = new CleanupHandler();
-	req->refCount = 0;
-	req->unk_08 = 1;
-	req->cb = (CleanupHandler::CleanupCallback)AsyncEnqueue::JobKiller;
+	SharedPtr<job::JobItem> itemParam(dwJob);
 
-	ObjectWithCleanup itemParam;
-	itemParam.object = dwJob;
-	itemParam.cleanup = req;
-
-	return thread::s_defaultJobQueue->Enqueue(&itemParam);
+	return job::s_defaultJobQueue->Enqueue(&itemParam);
 }

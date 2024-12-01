@@ -12,7 +12,7 @@ using namespace sce;
 
 static YTUtils::HistLog *s_histLog = SCE_NULL;
 static YTUtils::FavLog *s_favLog = SCE_NULL;
-static thread::Sema *s_menuSema = SCE_NULL;
+static SceUID s_menuLock = SCE_UID_INVALID_UID;
 static SceAvPlayerFileReplacement s_fio;
 static SceNmHandle s_nmHandle = SCE_NULL;
 static SceAvPlayerMemAllocator s_nmAllocator;
@@ -28,6 +28,25 @@ SceVoid YTUtils::NMDeallocate(ScePVoid argP, ScePVoid argMemory)
 	sce_paf_free(argMemory);
 }
 
+SceBool YTUtils::DowbloadFile(char *url, ScePVoid *ppBuf, SceSize *pBufSize)
+{
+	SceInt32 ret = 0;
+
+	SharedPtr<HttpFile> file = paf::HttpFile::Open(url, SCE_O_RDONLY, 0, &ret);
+	if (ret != SCE_OK)
+		return SCE_FALSE;
+
+	char *buf = (char *)sce_paf_malloc(SCE_KERNEL_256KiB);
+
+	*pBufSize = file->Read(buf, SCE_KERNEL_256KiB);
+
+	file->Close();
+
+	*ppBuf = buf;
+
+	return SCE_TRUE;
+}
+
 SceInt32 YTUtils::Log::GetNext(char *data)
 {
 	SceInt32 ret;
@@ -41,7 +60,7 @@ SceInt32 YTUtils::Log::GetNext(char *data)
 		// Restore '='
 		sptr = sce_paf_strchr(data, '}');
 		while (sptr) {
-			*sptr = '=';
+			*sptr = '=';
 			sptr = sce_paf_strchr(sptr, '}');
 		}
 	}
@@ -51,21 +70,17 @@ SceInt32 YTUtils::Log::GetNext(char *data)
 
 SceInt32 YTUtils::Log::Get(const char *data)
 {
-	SceInt32 ret;
 	char *sptr;
 	char dataCopy[SCE_INI_FILE_PROCESSOR_KEY_BUFFER_SIZE];
 	char val[2];
 
 	sce_paf_strncpy(dataCopy, data, SCE_INI_FILE_PROCESSOR_KEY_BUFFER_SIZE);
 
-	if (ret == SCE_OK) {
-
-		// Restore '='
-		sptr = sce_paf_strchr(dataCopy, '}');
-		while (sptr) {
-			*sptr = '=';
-			sptr = sce_paf_strchr(sptr, '}');
-		}
+	// Restore '}'
+	sptr = sce_paf_strchr(dataCopy, '=');
+	while (sptr) {
+		*sptr = '}';
+		sptr = sce_paf_strchr(sptr, '=');
 	}
 
 	return  ini->get(dataCopy, val, sizeof(val), 0);
@@ -96,7 +111,7 @@ SceVoid YTUtils::Log::Add(const char *data)
 	sptr = sce_paf_strchr(dataCopy, '=');
 
 	while (sptr) {
-		*sptr = '}';
+		*sptr = '}';
 		sptr = sce_paf_strchr(sptr, '=');
 	}
 
@@ -113,7 +128,7 @@ SceVoid YTUtils::Log::Remove(const char *data)
 	sptr = sce_paf_strchr(dataCopy, '=');
 
 	while (sptr) {
-		*sptr = '}';
+		*sptr = '}';
 		sptr = sce_paf_strchr(sptr, '=');
 	}
 
@@ -204,8 +219,8 @@ SceVoid YTUtils::Init()
 		NETMediaInit(&s_nmHandle, &s_fio, SCE_NULL, 256 * 1024, 0, 0, &s_nmAllocator);
 	}
 
-	if (!s_menuSema)
-		s_menuSema = new thread::Sema("EMPVA::YtMenuSema", 1, 1);
+	if (s_menuLock == SCE_UID_INVALID_UID)
+		s_menuLock = sceKernelCreateEventFlag("EMPVA::YtMenuLock", SCE_KERNEL_ATTR_MULTI, 1, SCE_NULL);
 }
 
 SceVoid YTUtils::Term(SceBool isFullTerm)
@@ -233,9 +248,9 @@ SceVoid YTUtils::Term(SceBool isFullTerm)
 			s_nmHandle = SCE_NULL;
 		}
 
-		if (s_menuSema) {
-			delete s_menuSema;
-			s_menuSema = SCE_NULL;
+		if (s_menuLock != SCE_UID_INVALID_UID) {
+			sceKernelDeleteEventFlag(s_menuLock);
+			s_menuLock = SCE_UID_INVALID_UID;
 		}
 	}
 }
@@ -264,7 +279,17 @@ Downloader *YTUtils::GetDownloader()
 	return s_downloader;
 }
 
-thread::Sema *YTUtils::GetMenuSema()
+SceVoid YTUtils::LockMenuParsers()
 {
-	return s_menuSema;
+	sceKernelClearEventFlag(s_menuLock, ~1);
+}
+
+SceVoid YTUtils::UnlockMenuParsers()
+{
+	sceKernelSetEventFlag(s_menuLock, 1);
+}
+
+SceVoid YTUtils::WaitMenuParsers()
+{
+	sceKernelWaitEventFlag(s_menuLock, 1, SCE_KERNEL_EVF_WAITMODE_OR, SCE_NULL, SCE_NULL);
 }

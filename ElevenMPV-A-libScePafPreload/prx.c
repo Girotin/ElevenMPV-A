@@ -40,17 +40,17 @@ int __module_start(SceSize argc, void *args)
 
 #ifdef GROW_MEMORY
 
-	init_param.global_heap_size = 4 * 1024 * 1024 + 512 * 1024;
+	init_param.global_heap_size = 4 * 1024 * 1024;
 
 	//Grow memory if possible
 	ret = sceAppMgrGrowMemory3(41 * 1024 * 1024, 1); // 57 MB
 	if (ret < 0) {
 		ret = sceAppMgrGrowMemory3(16 * 1024 * 1024, 1); // 32 MB
 		if (ret == 0)
-			init_param.global_heap_size = 12 * 1024 * 1024;
+			init_param.global_heap_size = 14 * 1024 * 1024;
 	}
 	else
-		init_param.global_heap_size = 20 * 1024 * 1024;
+		init_param.global_heap_size = 25 * 1024 * 1024;
 #else
 	init_param.global_heap_size = 12 * 1024 * 1024;
 #endif
